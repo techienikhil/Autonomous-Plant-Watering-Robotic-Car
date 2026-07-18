@@ -1,0 +1,229 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// ==========================================
+// 1. PIN & MODULE DEFINITIONS
+// ==========================================
+#define CURRENT_PIN A0  // ACS712 Current Sensor via Voltage Divider
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1   // No hardware reset pin on most 0.96 OLEDs
+
+// Initialize PCA9685 (Default I2C address is 0x40)
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+// Initialize OLED (Default I2C address is usually 0x3C)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Servo Constants (Tweak these if your servos buzz at 0 or 180 degrees)
+#define SERVOMIN  150 // Minimum pulse length count (out of 4096)
+#define SERVOMAX  600 // Maximum pulse length count (out of 4096)
+
+// ==========================================
+// 2. NETWORK SETTINGS & SERVER
+// ==========================================
+const char* ssid = "robotic bull car";
+const char* password = "robotic1234";
+
+ESP8266WebServer server(80);
+
+// Global variables for motor telemetry
+int rawCurrentADC = 0;
+float currentAmps = 0.0;
+
+// ==========================================
+// 3. CYBERPUNK WEB GUI (HTML/JS)
+// ==========================================
+const char* htmlPage PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rover Servo OS</title>
+  <style>
+    body { background-color: #0d0d0d; color: #00ffcc; font-family: 'Courier New', Courier, monospace; margin: 0; padding: 20px; }
+    h1 { text-align: center; color: #ff0055; text-shadow: 0 0 10px #ff0055; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px;}
+    .status-bar { border-bottom: 2px solid #00ffcc; padding-bottom: 10px; margin-bottom: 20px; font-weight: bold; font-size: 18px; display: flex; justify-content: space-between; }
+    .current-display { color: #ffaa00; text-shadow: 0 0 5px #ffaa00; }
+    .servo-container { background: #1a1a1a; padding: 15px; margin-bottom: 15px; border: 1px solid #333; border-radius: 8px; box-shadow: 0 0 10px rgba(0,255,204,0.1); }
+    .servo-label { font-size: 18px; font-weight: bold; margin-bottom: 10px; display: flex; justify-content: space-between; }
+    input[type=range] { width: 100%; cursor: pointer; accent-color: #ff0055; }
+  </style>
+</head>
+<body>
+  <h1>Robotic Arm OS</h1>
+  
+  <div class="status-bar">
+    <span>NETWORK: SECURE</span>
+    <span class="current-display" id="currentRead">MOTOR CURRENT: 0.00 A</span>
+  </div>
+
+  <div id="sliders"></div>
+
+  <script>
+    const numServos = 7;
+    const slidersDiv = document.getElementById('sliders');
+    
+    for (let i = 0; i < numServos; i++) {
+      let html = `
+        <div class="servo-container">
+          <div class="servo-label">
+            <span>SERVO ${i} (Kinematic Joint ${i})</span>
+            <span id="val${i}">90&deg;</span>
+          </div>
+          <input type="range" min="0" max="180" value="90" id="s${i}" oninput="updateServo(${i}, this.value)" onchange="sendServo(${i}, this.value)">
+        </div>
+      `;
+      slidersDiv.innerHTML += html;
+    }
+
+    function updateServo(id, val) {
+      document.getElementById('val' + id).innerHTML = val + '&deg;';
+    }
+
+    function sendServo(id, val) {
+      fetch(`/setServo?id=${id}&angle=${val}`);
+    }
+
+    setInterval(() => {
+      fetch('/getCurrent')
+        .then(response => response.text())
+        .then(data => {
+          document.getElementById('currentRead').innerText = 'MOTOR CURRENT: ' + data + ' A';
+        })
+        .catch(error => console.log("Current Fetch Error"));
+    }, 500);
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// ==========================================
+// 4. HELPER FUNCTIONS
+// ==========================================
+int angleToPulse(int angle) {
+  return map(angle, 0, 180, SERVOMIN, SERVOMAX);
+}
+
+// ==========================================
+// 5. SERVER ENDPOINTS
+// ==========================================
+void handleRoot() {
+  server.send(200, "text/html", htmlPage);
+}
+
+void handleSetServo() {
+  if (server.hasArg("id") && server.hasArg("angle")) {
+    int servoID = server.arg("id").toInt();
+    int angle = server.arg("angle").toInt();
+    
+    int pulse = angleToPulse(angle);
+    pwm.setPWM(servoID, 0, pulse); 
+    
+    server.send(200, "text/plain", "OK");
+  } else {
+    server.send(400, "text/plain", "Bad Request");
+  }
+}
+
+void handleGetCurrent() {
+  server.send(200, "text/plain", String(currentAmps, 2));
+}
+
+// ==========================================
+// 6. MAIN SETUP
+// ==========================================
+void setup() {
+  Serial.begin(115200);
+  
+  // Onboard Cyberpunk Blue LED configuration
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW); // LOW turns it ON on ESP8266
+  
+  // Initialize I2C Bus (D2 = SDA, D1 = SCL on standard NodeMCU)
+  Wire.begin(4, 5); 
+
+  // Initialize OLED
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+  } else {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(15, 25);
+    display.println("BOOTING ROVER OS...");
+    display.display();
+  }
+
+  // Initialize PCA9685 Servos
+  pwm.begin();
+  pwm.setPWMFreq(50); 
+  delay(10);
+
+  // Initialize WiFi
+  Serial.println("\nStarting Hotspot...");
+  WiFi.softAP(ssid, password);
+  
+  // Define Server Routes
+  server.on("/", handleRoot);
+  server.on("/setServo", handleSetServo);
+  server.on("/getCurrent", handleGetCurrent);
+  server.begin();
+
+  // Update OLED to show successful boot and IP
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("SYSTEM ONLINE");
+  display.print("IP: ");
+  display.println(WiFi.softAPIP());
+  display.display();
+}
+
+// ==========================================
+// 7. MAIN LOOP
+// ==========================================
+unsigned long lastReadTime = 0;
+
+void loop() {
+  server.handleClient(); 
+
+  unsigned long currentMillis = millis();
+  
+  // Read current sensor and update OLED every 200ms
+  if (currentMillis - lastReadTime >= 200) {
+    lastReadTime = currentMillis;
+    
+    rawCurrentADC = analogRead(CURRENT_PIN);
+    
+    int adcOffset = 515; // Tune this to match your real-world zero-current value
+    currentAmps = abs(rawCurrentADC - adcOffset) * 0.0264; 
+
+    // Update OLED Screen
+    display.clearDisplay();
+    
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("--- ROBOTIC ARM ---");
+    
+    display.setCursor(0, 15);
+    display.print("IP: ");
+    display.println(WiFi.softAPIP());
+    
+    display.setTextSize(2);
+    display.setCursor(0, 35);
+    display.print(currentAmps, 2);
+    display.println(" A");
+    
+    display.setTextSize(1);
+    display.setCursor(85, 35);
+    display.println("RAW:");
+    display.setCursor(85, 45);
+    display.print(rawCurrentADC);
+    
+    display.display();
+  }
+}
