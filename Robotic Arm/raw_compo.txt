@@ -1,0 +1,39 @@
+Yes. Those white cylindrical pieces are generally called spacers or standoffs.
+
+In DIY robotics and linkage mechanisms, they can go by several names depending on the material and where you buy them:
+
+Plastic Spacer (most common name)
+Nylon Spacer
+Plastic Standoff
+Spacer Sleeve
+Tube Spacer
+Nylon Bush (sometimes, though "bush" usually refers to a bearing-like part)
+
+In your image, they're being used as spacers to keep the two popsicle sticks at a fixed distance apart, which:
+
+Increases the arm's rigidity.
+Prevents the sticks from twisting.
+Makes the linkage much stronger without adding much weight.
+
+They're simply screwed or bolted through the center.
+
+If you want to buy them
+
+Search for:
+
+M3 Nylon Spacer
+M3 Plastic Spacer
+M3 Standoff
+M3 Female-Female Nylon Standoff (if threaded)
+M3 Unthreaded Nylon Spacer (if it's just a tube)
+
+The "M3" refers to the screw diameter (3 mm), which is very common in robotics.
+
+For your robotic arm project, I'd recommend using nylon spacers because they are:
+
+✅ Lightweight
+✅ Electrically non-conductive
+✅ Cheap
+✅ Strong enough for small robotic linkages
+
+If you're building a more precise arm, you can also use aluminum standoffs for even greater stiffness.
